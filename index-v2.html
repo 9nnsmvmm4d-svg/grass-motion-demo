@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f1c14" />
+  <title>Grass Motion Front Camera Demo</title>
+  <link rel="preconnect" href="https://api.fontshare.com" />
+  <link href="https://api.fontshare.com/v2/css?f[]=general-sans@400,500,600,700&display=swap" rel="stylesheet" />
+  <style>body{margin:0;font-family:system-ui,sans-serif;background:#eef4ec;color:#142218} .wrap{display:grid;grid-template-columns:1.2fr .8fr;gap:16px;padding:16px;max-width:1120px;margin:0 auto} .card{border:1px solid rgba(18,38,25,.12);background:rgba(255,255,255,.8);border-radius:24px;overflow:hidden;position:relative;box-shadow:0 10px 30px rgba(15,28,20,.09)} .scene{min-height:72vh;background:linear-gradient(180deg,#eef8f3,#cfe1cb);position:relative} #cameraVideo,#grassCanvas{position:absolute;inset:0;width:100%;height:100%} #cameraVideo{object-fit:cover;transform:scaleX(-1);opacity:.14;filter:saturate(.8) contrast(1.05) brightness(.9)} .overlay{position:relative;z-index:2;display:flex;flex-direction:column;justify-content:space-between;min-height:72vh;padding:28px} .pill{display:inline-block;padding:.55rem .9rem;border-radius:999px;background:rgba(255,255,255,.66);margin:0 8px 8px 0;font-size:.9rem} h1,h2,h3,p{margin:0} h2{font-size:clamp(2rem,1.4rem + 4vw,4.8rem);line-height:.95;max-width:12ch} .side{padding:24px;display:grid;gap:16px} .btns{display:flex;gap:12px;flex-wrap:wrap}.btn{min-height:48px;padding:.85rem 1.15rem;border-radius:999px;border:1px solid rgba(18,38,25,.12);background:#fff;cursor:pointer}.primary{background:#296b46;color:#f4f8f2;border-color:transparent}.stats{display:grid;grid-template-columns:1fr 1fr;gap:12px}.stat{padding:16px;border:1px solid rgba(18,38,25,.12);border-radius:16px;background:#fff}.val{font-size:2rem;font-weight:700}.mini{display:grid;grid-template-columns:1fr 1fr;gap:12px}.mini > div{padding:12px;border:1px solid rgba(18,38,25,.12);border-radius:16px;background:#fff} input[type=range]{width:100%}@media(max-width:920px){.wrap{grid-template-columns:1fr}.scene,.overlay{min-height:60vh}}@media(max-width:640px){.stats,.mini{grid-template-columns:1fr}}</style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="card scene">
+      <video id="cameraVideo" playsinline autoplay muted></video>
+      <canvas id="grassCanvas"></canvas>
+      <div class="overlay">
+        <div>
+          <div class="pill" id="cameraState">Camera idle</div>
+          <div class="pill" id="motionState">No motion</div>
+          <h2>Move gently and the field leans with you.</h2>
+          <p>The grass now sways left and right with individual blade timing, damping, and curl for a more natural feel.</p>
+        </div>
+        <div>
+          <div class="pill">Two-direction sway</div>
+          <div class="pill">Per-blade spring motion</div>
+          <div class="pill">Front camera requested</div>
+        </div>
+      </div>
+    </section>
+    <aside class="card side">
+      <div>
+        <p style="text-transform:uppercase;letter-spacing:.12em;color:#59695f;font-size:.8rem">Controls</p>
+        <h3>Updated realistic grass.</h3>
+        <p style="color:#59695f">Replace your old GitHub Pages index file with this one.</p>
+      </div>
+      <div class="btns">
+        <button id="startBtn" class="btn primary">Start front camera</button>
+        <button id="stopBtn" class="btn">Stop</button>
+      </div>
+      <div class="stats">
+        <div class="stat"><div style="font-size:.8rem;text-transform:uppercase;color:#59695f">Motion energy</div><div class="val" id="energyValue">0.00</div></div>
+        <div class="stat"><div style="font-size:.8rem;text-transform:uppercase;color:#59695f">Bend amount</div><div class="val" id="bendValue">0.00</div></div>
+      </div>
+      <label>Pixel threshold <strong id="thresholdReadout">28</strong><input id="thresholdRange" type="range" min="5" max="80" step="1" value="28"></label>
+      <label>Sensitivity <strong id="sensitivityReadout">1.15</strong><input id="sensitivityRange" type="range" min="0.4" max="2.5" step="0.05" value="1.15"></label>
+      <div class="mini">
+        <div><strong>Natural motion</strong><br><span style="color:#59695f">Every blade has different stiffness, damping, drift, and curl.</span></div>
+        <div><strong>Bidirectional</strong><br><span style="color:#59695f">The field can settle left or right instead of only one way.</span></div>
+      </div>
+    </aside>
+  </div>
+<script>
+(() => {
+  const video = document.getElementById('cameraVideo');
+  const canvas = document.getElementById('grassCanvas');
+  const ctx = canvas.getContext('2d');
+  const captureCanvas = document.createElement('canvas');
+  const captureCtx = captureCanvas.getContext('2d', { willReadFrequently: true });
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const cameraState = document.getElementById('cameraState');
+  const motionState = document.getElementById('motionState');
+  const energyValue = document.getElementById('energyValue');
+  const bendValue = document.getElementById('bendValue');
+  const thresholdRange = document.getElementById('thresholdRange');
+  const sensitivityRange = document.getElementById('sensitivityRange');
+  const thresholdReadout = document.getElementById('thresholdReadout');
+  const sensitivityReadout = document.getElementById('sensitivityReadout');
+  const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  let stream = null;
+  let previousFrame = null;
+  let motionEnergy = 0;
+  let fieldBend = 0;
+  let fieldVelocity = 0;
+  let windBias = 0;
+  let ambientPhase = Math.random() * Math.PI * 2;
+  let lastDetect = 0;
+  const detectInterval = 100;
+  let motionPulse = 0;
+  let lastTime = performance.now();
+
+  thresholdReadout.textContent = thresholdRange.value;
+  sensitivityReadout.textContent = Number(sensitivityRange.value).toFixed(2);
+  thresholdRange.addEventListener('input', () => thresholdReadout.textContent = thresholdRange.value);
+  sensitivityRange.addEventListener('input', () => sensitivityReadout.textContent = Number(sensitivityRange.value).toFixed(2));
+
+  const DPR = Math.min(window.devicePixelRatio || 1, 2);
+  const blades = [];
+  const bladeCount = 180;
+
+  function resizeCanvas() {
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = Math.max(1, Math.round(rect.width * DPR));
+    canvas.height = Math.max(1, Math.round(rect.height * DPR));
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    buildBlades(rect.width, rect.height);
+  }
+
+  function buildBlades(width, height) {
+    blades.length = 0;
+    for (let i = 0; i < bladeCount; i++) {
+      const depth = i / bladeCount;
+      blades.push({
+        x: Math.random() * width,
+        y: height + Math.random() * 12,
+        h: 42 + depth * height * 0.24 + Math.random() * 32,
+        thickness: 1 + depth * 2.6,
+        sway: 0.8 + Math.random() * 1.9,
+        seed: Math.random() * Math.PI * 2,
+        tint: 86 + Math.random() * 42,
+        depth,
+        bend: (Math.random() - 0.5) * 2,
+        velocity: 0,
+        stiffness: 0.024 + Math.random() * 0.045,
+        damping: 0.84 + Math.random() * 0.1,
+        influence: 0.55 + Math.random() * 1.2,
+        drift: (Math.random() - 0.5) * 2.4,
+        curl: 0.22 + Math.random() * 0.5
+      });
+    }
+    blades.sort((a, b) => a.depth - b.depth);
+  }
+
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+
+  function drawField(time, dt) {
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    ctx.clearRect(0, 0, w, h);
+
+    const sky = ctx.createLinearGradient(0, 0, 0, h);
+    sky.addColorStop(0, '#d9efe7');
+    sky.addColorStop(1, 'transparent');
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, w, h);
+
+    const ground = ctx.createLinearGradient(0, h * 0.56, 0, h);
+    ground.addColorStop(0, 'rgba(132, 171, 94, 0.28)');
+    ground.addColorStop(1, 'rgba(33, 85, 46, 0.92)');
+    ctx.fillStyle = ground;
+    ctx.fillRect(0, h * 0.56, w, h * 0.44);
+
+    const ambient = prefersReduced ? 0.12 : 0.42;
+    ambientPhase += dt * 2.25;
+
+    for (const blade of blades) {
+      const localWave = Math.sin(time * 0.0012 * blade.sway + blade.seed + ambientPhase) * ambient;
+      const counterWave = Math.cos(time * 0.00085 * (0.8 + blade.depth) + blade.seed * 0.72) * ambient * 0.44;
+      const target = fieldBend * blade.influence + localWave + counterWave + blade.drift * 0.16;
+      blade.velocity += (target - blade.bend) * blade.stiffness * dt * 60;
+      blade.velocity *= Math.pow(blade.damping, dt * 60);
+      blade.bend += blade.velocity;
+
+      const lean = clamp(blade.bend, -22, 22);
+      const midLean = lean * (0.42 + blade.curl);
+      const tipX = blade.x + lean * (1.05 + blade.depth * 0.9);
+      const tipY = blade.y - blade.h;
+      const controlX = blade.x + midLean + Math.sin(time * 0.001 + blade.seed) * 1.4 * blade.depth;
+      const controlY = blade.y - blade.h * (0.5 + blade.curl * 0.22);
+      const hue = 94 + blade.depth * 28;
+      const alpha = 0.38 + blade.depth * 0.58;
+      ctx.strokeStyle = `hsla(${hue}, ${blade.tint}%, ${22 + blade.depth * 26}%, ${alpha})`;
+      ctx.lineWidth = blade.thickness;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(blade.x, blade.y);
+      ctx.quadraticCurveTo(controlX, controlY, tipX, tipY);
+      ctx.stroke();
+    }
+
+    if (motionPulse > 0.01) {
+      const glow = ctx.createRadialGradient(w * 0.5, h * 0.72, 10, w * 0.5, h * 0.72, w * 0.5);
+      glow.addColorStop(0, `rgba(202, 238, 145, ${0.08 * motionPulse})`);
+      glow.addColorStop(1, 'rgba(202, 238, 145, 0)');
+      ctx.fillStyle = glow;
+      ctx.fillRect(0, h * 0.45, w, h * 0.55);
+    }
+  }
+
+  function detectMotion() {
+    if (!video.videoWidth || !video.videoHeight) return;
+    const sampleW = 96;
+    const sampleH = Math.max(54, Math.round(sampleW * (video.videoHeight / video.videoWidth)));
+    captureCanvas.width = sampleW;
+    captureCanvas.height = sampleH;
+
+    captureCtx.save();
+    captureCtx.scale(-1, 1);
+    captureCtx.drawImage(video, -sampleW, 0, sampleW, sampleH);
+    captureCtx.restore();
+
+    const frame = captureCtx.getImageData(0, 0, sampleW, sampleH);
+    if (!previousFrame) {
+      previousFrame = new Uint8ClampedArray(frame.data);
+      return;
+    }
+
+    const threshold = Number(thresholdRange.value);
+    const sensitivity = Number(sensitivityRange.value);
+    let changed = 0;
+    const pixelCount = sampleW * sampleH;
+
+    for (let i = 0; i < frame.data.length; i += 4) {
+      const diff = (
+        Math.abs(frame.data[i] - previousFrame[i]) +
+        Math.abs(frame.data[i + 1] - previousFrame[i + 1]) +
+        Math.abs(frame.data[i + 2] - previousFrame[i + 2])
+      ) / 3;
+      if (diff > threshold) changed++;
+    }
+
+    previousFrame = new Uint8ClampedArray(frame.data);
+    const rawEnergy = changed / pixelCount;
+    motionEnergy = lerp(motionEnergy, rawEnergy * sensitivity, 0.35);
+
+    const directionSeed = Math.sin(performance.now() * 0.0023) + Math.cos(performance.now() * 0.0017);
+    windBias = lerp(windBias, directionSeed >= 0 ? 1 : -1, 0.08);
+    const targetFieldBend = clamp(motionEnergy * 18, 0, 12) * windBias;
+    fieldVelocity += (targetFieldBend - fieldBend) * 0.075;
+    fieldVelocity *= prefersReduced ? 0.72 : 0.86;
+    fieldBend += fieldVelocity;
+    motionPulse = clamp(motionEnergy * 9, 0, 1);
+
+    energyValue.textContent = motionEnergy.toFixed(2);
+    bendValue.textContent = Math.abs(fieldBend).toFixed(2);
+    motionState.textContent = motionEnergy > 0.03 ? 'Motion detected' : 'No motion';
+  }
+
+  async function startCamera() {
+    stopCamera();
+    cameraState.textContent = 'Requesting camera';
+    motionState.textContent = 'Waiting for frames';
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 15, max: 24 } }
+      });
+    } catch (err) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
+      } catch (fallbackErr) {
+        cameraState.textContent = 'Camera unavailable';
+        motionState.textContent = fallbackErr.name || 'Permission denied';
+        return;
+      }
+    }
+    video.srcObject = stream;
+    await video.play();
+    previousFrame = null;
+    cameraState.textContent = 'Camera live';
+    motionState.textContent = 'Ready for motion';
+  }
+
+  function stopCamera() {
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      stream = null;
+    }
+    video.srcObject = null;
+    previousFrame = null;
+    motionEnergy = 0;
+    fieldBend = 0;
+    fieldVelocity = 0;
+    windBias = 0;
+    motionPulse = 0;
+    blades.forEach(blade => { blade.bend = 0; blade.velocity = 0; });
+    energyValue.textContent = '0.00';
+    bendValue.textContent = '0.00';
+    cameraState.textContent = 'Camera idle';
+    motionState.textContent = 'No motion';
+  }
+
+  startBtn.addEventListener('click', startCamera);
+  stopBtn.addEventListener('click', stopCamera);
+  window.addEventListener('resize', resizeCanvas, { passive: true });
+  resizeCanvas();
+
+  function loop(time) {
+    const dt = Math.min(0.033, (time - lastTime) / 1000 || 0.016);
+    lastTime = time;
+    if (stream && time - lastDetect >= detectInterval) {
+      detectMotion();
+      lastDetect = time;
+    } else {
+      fieldVelocity += (0 - fieldBend) * 0.04;
+      fieldVelocity *= prefersReduced ? 0.7 : 0.92;
+      fieldBend += fieldVelocity;
+      motionEnergy = lerp(motionEnergy, 0, 0.04);
+      motionPulse = lerp(motionPulse, 0, 0.06);
+      energyValue.textContent = motionEnergy.toFixed(2);
+      bendValue.textContent = Math.abs(fieldBend).toFixed(2);
+    }
+    drawField(time, dt);
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
